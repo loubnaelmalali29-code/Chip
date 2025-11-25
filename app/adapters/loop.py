@@ -141,36 +141,145 @@ class LoopClient(MessagingAdapter):
             raise PermissionError("Unauthorized webhook")
 
     def normalize_event(self, body: Dict[str, Any]) -> NormalizedEvent:
+        """Normalize webhook payload to NormalizedEvent, handling various payload shapes and edge cases."""
+        if not isinstance(body, dict):
+            # Handle non-dict payloads gracefully
+            return NormalizedEvent(
+                alert_type=None,
+                text=str(body) if body else "",
+                recipient=None,
+                message_id=None,
+            )
+
         # Native Loop webhook shape
-        if isinstance(body, dict) and body.get("alert_type"):
-            group = body.get("group") if isinstance(body.get("group"), dict) else None
-            message_type = body.get("message_type")
-            reaction = body.get("reaction")
+        if body.get("alert_type"):
+            group = body.get("group")
+            if isinstance(group, dict):
+                group_id = group.get("group_id")
+            elif isinstance(group, str):
+                group_id = group
+            else:
+                group_id = None
+
+            # Safely parse message_type
+            message_type = None
+            raw_message_type = body.get("message_type")
+            if isinstance(raw_message_type, str):
+                try:
+                    # Try to match against known MessageType values
+                    message_type_values = {m.value for m in MessageType}
+                    if raw_message_type.lower() in {v.lower() for v in message_type_values}:
+                        # Find the matching enum value (case-insensitive)
+                        for mt in MessageType:
+                            if mt.value.lower() == raw_message_type.lower():
+                                message_type = mt
+                                break
+                except Exception:
+                    pass
+
+            # Safely parse reaction
+            reaction = None
+            raw_reaction = body.get("reaction")
+            if isinstance(raw_reaction, str):
+                try:
+                    reaction_values = {r.value for r in ReactionType}
+                    if raw_reaction.lower() in {v.lower() for v in reaction_values}:
+                        for rt in ReactionType:
+                            if rt.value.lower() == raw_reaction.lower():
+                                reaction = rt
+                                break
+                except Exception:
+                    pass
+
+            # Extract text from various possible fields
+            text = body.get("text", "")
+            if not text:
+                text = body.get("content", "")
+            if not text:
+                text = body.get("message", "")
+            if not isinstance(text, str):
+                text = str(text) if text else ""
+
+            # Extract recipient from various possible fields
+            recipient = body.get("recipient")
+            if not recipient:
+                recipient = body.get("from")
+            if isinstance(recipient, dict):
+                recipient = recipient.get("address") or recipient.get("recipient")
+            if not isinstance(recipient, str):
+                recipient = None
+
+            # Extract message_id from various possible fields
+            message_id = body.get("message_id")
+            if not message_id:
+                message_id = body.get("id")
+            if not isinstance(message_id, str):
+                message_id = None
+
             return NormalizedEvent(
                 alert_type=body.get("alert_type"),
-                text=body.get("text", ""),
-                recipient=body.get("recipient"),
-                message_id=body.get("message_id"),
-                group_id=group.get("group_id") if isinstance(group, dict) else None,
-                message_type=MessageType(message_type)
-                if isinstance(message_type, str)
-                and message_type in {m.value for m in MessageType}
-                else None,
-                reaction=ReactionType(reaction)
-                if isinstance(reaction, str)
-                and reaction in {r.value for r in ReactionType}
-                else None,
+                text=text,
+                recipient=recipient,
+                message_id=message_id,
+                group_id=group_id,
+                message_type=message_type,
+                reaction=reaction,
             )
 
         # Internal testing shape from plan
-        data = body.get("data", {}) if isinstance(body, dict) else {}
-        message = data.get("message", {}) if isinstance(data, dict) else {}
+        data = body.get("data", {})
+        if not isinstance(data, dict):
+            data = {}
+
+        message = data.get("message", {})
+        if not isinstance(message, dict):
+            message = {}
+
+        # Extract text from nested message or data
+        text = message.get("text", "")
+        if not text:
+            text = data.get("text", "")
+        if not text:
+            text = body.get("text", "")
+        if not isinstance(text, str):
+            text = str(text) if text else ""
+
+        # Extract recipient
+        recipient = None
+        from_field = message.get("from")
+        if isinstance(from_field, dict):
+            recipient = from_field.get("address")
+        elif isinstance(from_field, str):
+            recipient = from_field
+        if not recipient:
+            recipient = data.get("from")
+        if not recipient:
+            recipient = body.get("from")
+        if not isinstance(recipient, str):
+            recipient = None
+
+        # Extract message_id
+        message_id = message.get("id")
+        if not message_id:
+            message_id = data.get("id")
+        if not message_id:
+            message_id = body.get("id")
+        if not isinstance(message_id, str):
+            message_id = None
+
+        # Extract group_id
+        group_id = data.get("conversationId")
+        if not group_id:
+            group_id = data.get("group_id")
+        if not group_id:
+            group_id = body.get("group_id")
+        if not isinstance(group_id, str):
+            group_id = None
+
         return NormalizedEvent(
-            alert_type=body.get("event"),
-            text=message.get("text", ""),
-            recipient=message.get("from", {}).get("address")
-            if isinstance(message.get("from"), dict)
-            else None,
-            message_id=message.get("id"),
-            group_id=data.get("conversationId") if isinstance(data, dict) else None,
+            alert_type=body.get("event") or body.get("alert_type"),
+            text=text,
+            recipient=recipient,
+            message_id=message_id,
+            group_id=group_id,
         )

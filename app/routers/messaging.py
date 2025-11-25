@@ -12,11 +12,13 @@ from app.types import (
     SendMessageRequest,
     SendMessageResponse,
     IMessageTextMessage,
+    MessageType,
 )
 from app.agents.langchain_agent import generate_reply_with_langchain
 from app.services.supabase_rag import get_rag_service
 from app.services.user_service import get_user_service
 from app.services.submission_service import get_submission_service
+from app.utils.spelling import extract_clean_message
 
 
 router = APIRouter(prefix="", tags=["messaging"])
@@ -104,14 +106,55 @@ async def webhook_events(
     except PermissionError:
         raise HTTPException(status_code=401, detail="Unauthorized webhook")
 
-    normalized: NormalizedEvent = adapter.normalize_event(
-        payload if isinstance(payload, dict) else {}
-    )
+    # Normalize the event - handles various payload shapes and message types
+    try:
+        normalized: NormalizedEvent = adapter.normalize_event(
+            payload if isinstance(payload, dict) else {}
+        )
+    except Exception as e:
+        print(f"Error normalizing event: {e}")
+        return {"ok": True, "error": f"Failed to normalize event: {str(e)}"}
 
     alert_type = normalized.alert_type
     message_id = normalized.message_id
     recipient = normalized.recipient
+    message_type = normalized.message_type
     text = normalized.text or ""
+    
+    # Handle different message types
+    # Only process text messages and messages without a specific type (assumed to be text)
+    if message_type and message_type not in (MessageType.TEXT, None):
+        # For non-text messages (audio, reactions, etc.), send a helpful response
+        if message_type == MessageType.AUDIO:
+            if recipient:
+                try:
+                    adapter.send_message(
+                        IMessageTextMessage(
+                            recipient=recipient,
+                            text="I received your audio message! Could you send that as text? I'm better at understanding written messages.",
+                        )
+                    )
+                except Exception as e:
+                    if "280" not in str(e) and "opted out" not in str(e).lower():
+                        print(f"Error sending audio response: {e}")
+            return {"ok": True, "ignored": True, "reason": "Audio message - requested text"}
+        elif message_type == MessageType.REACTION:
+            # Reactions don't need responses
+            return {"ok": True, "ignored": True, "reason": "Reaction message - no response needed"}
+        else:
+            # Other message types - try to extract text or send helpful message
+            if not text and recipient:
+                try:
+                    adapter.send_message(
+                        IMessageTextMessage(
+                            recipient=recipient,
+                            text="I received your message, but I'm best at handling text messages. Could you send that as text?",
+                        )
+                    )
+                except Exception as e:
+                    if "280" not in str(e) and "opted out" not in str(e).lower():
+                        print(f"Error sending message type response: {e}")
+            return {"ok": True, "ignored": True, "reason": f"Non-text message type: {message_type}"}
     
     if alert_type and alert_type != "message_inbound":
         print(f"Ignoring non-message event: alert_type={alert_type}")
@@ -123,19 +166,27 @@ async def webhook_events(
         print(f"Ignoring message from bot itself: recipient={recipient}")
         return {"ok": True, "ignored": True, "reason": "Message from bot itself"}
 
-    is_duplicate = _is_message_processed(message_id, recipient, text)
+    # Clean and extract text message
+    cleaned_text = extract_clean_message(text)
+    
+    is_duplicate = _is_message_processed(message_id, recipient, cleaned_text)
     if is_duplicate:
         return {"ok": True, "ignored": True, "reason": "Message already processed recently"}
 
     user_id = None
     if recipient:
-        user_id = _user_service.get_or_create_user(phone_number=recipient)
-
-    if recipient and text and text.strip():
         try:
-            context = _rag_service.get_context_for_query(normalized.text)
+            user_id = _user_service.get_or_create_user(phone_number=recipient)
+        except Exception as e:
+            print(f"Error getting/creating user: {e}")
+            # Continue processing even if user creation fails
+
+    if recipient and cleaned_text and cleaned_text.strip():
+        try:
+            # Use cleaned text for context search
+            context = _rag_service.get_context_for_query(cleaned_text)
             reply_text, submission_data = generate_reply_with_langchain(
-                user_message=text,
+                user_message=cleaned_text,  # Use cleaned text for processing
                 context=context,
                 user_id=str(user_id) if user_id else None,
             )
@@ -154,7 +205,7 @@ async def webhook_events(
                 except Exception as e:
                     print(f"Error creating submission: {e}")
             
-            _mark_message_processed(message_id, recipient, text)
+            _mark_message_processed(message_id, recipient, cleaned_text)
             
             try:
                 adapter.send_message(
@@ -168,13 +219,28 @@ async def webhook_events(
                 if "280" not in error_str and "opted out" not in error_str.lower():
                     print(f"Error sending message: {send_error}")
         except Exception as e:
-            _mark_message_processed(message_id, recipient, text)
+            _mark_message_processed(message_id, recipient, cleaned_text)
             import traceback
             print(f"ERROR: LangChain response generation failed: {e}")
             print(traceback.format_exc())
+            
+            # Try to send a helpful error message to the user
+            if recipient:
+                try:
+                    adapter.send_message(
+                        IMessageTextMessage(
+                            recipient=recipient,
+                            text="I'm having trouble processing that right now. Could you try rephrasing your message?",
+                        )
+                    )
+                except Exception as send_error:
+                    if "280" not in str(send_error) and "opted out" not in str(send_error).lower():
+                        print(f"Error sending error message: {send_error}")
+            
             return {"ok": True, "error": "Failed to generate reply", "message_processed": True}
     elif recipient:
-        _mark_message_processed(message_id, recipient, text if text else "")
+        # Empty or whitespace-only message
+        _mark_message_processed(message_id, recipient, cleaned_text if cleaned_text else "")
         try:
             adapter.send_message(
                 IMessageTextMessage(
