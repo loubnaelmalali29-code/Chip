@@ -19,6 +19,7 @@ from app.services.supabase_rag import get_rag_service
 from app.services.user_service import get_user_service
 from app.services.submission_service import get_submission_service
 from app.utils.spelling import extract_clean_message
+from app.services.conversation_history import add_message, get_conversation_history
 
 
 router = APIRouter(prefix="", tags=["messaging"])
@@ -183,13 +184,24 @@ async def webhook_events(
 
     if recipient and cleaned_text and cleaned_text.strip():
         try:
+            # Get conversation history for context
+            conversation_history = get_conversation_history(recipient, max_messages=5)
+            
+            # Add user message to history
+            add_message(recipient, "user", cleaned_text)
+            
             # Use cleaned text for context search
             context = _rag_service.get_context_for_query(cleaned_text)
             reply_text, submission_data = generate_reply_with_langchain(
                 user_message=cleaned_text,  # Use cleaned text for processing
                 context=context,
                 user_id=str(user_id) if user_id else None,
+                recipient=recipient,
+                conversation_history=conversation_history,
             )
+            
+            # Add assistant reply to history
+            add_message(recipient, "assistant", reply_text)
             
             if submission_data and user_id:
                 try:

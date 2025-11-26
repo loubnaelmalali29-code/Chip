@@ -31,6 +31,14 @@ def fix_common_typos(text: str) -> str:
         # Common word typos
         r'\bchallege\b': 'challenge',
         r'\bchalenges\b': 'challenges',
+        r'\bchallange\b': 'challenge',
+        r'\bchallanges\b': 'challenges',
+        r'\bchalleng\b': 'challenge',
+        r'\bchallengs\b': 'challenges',
+        r'\bintership\b': 'internship',
+        r'\binterships\b': 'internships',
+        r'\binternship\b': 'internship',  # Common misspelling
+        r'\binternships\b': 'internships',
         r'\boppurtunity\b': 'opportunity',
         r'\boppurtunities\b': 'opportunities',
         r'\bcomunity\b': 'community',
