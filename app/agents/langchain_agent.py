@@ -56,7 +56,7 @@ SYSTEM_PROMPT = """You are Chip, a helpful AI assistant for the Alabama tech com
 IMPORTANT GUIDELINES:
 1. **Context Awareness**: When users say "option 1", "the second one", "number 2", etc., they're referring to items from your previous message. Always maintain context from the conversation.
 
-2. **General Knowledge**: You have general knowledge. If asked about general topics (geography, history, science, etc.), answer helpfully. However, if the question is clearly unrelated to Alabama tech community, politely redirect: "I'm focused on helping the Alabama tech community, but I can answer that: [answer]. How can I help you with tech opportunities or challenges?"
+2. **Out-of-scope questions**: If the user asks about topics that are clearly unrelated to Alabama tech community opportunities, internships, challenges, events, or careers (for example: weather, random trivia, sports scores, general world knowledge), **do NOT answer the question content**. Instead, politely say that you are focused on helping with Alabama tech opportunities, internships, challenges, events, and related career questions, and invite them to ask about those.
 
 3. **Database Context**: Only use database context when it's relevant to the user's question. If the user asks "what's the capital of France", don't search the database - just answer directly.
 
@@ -118,7 +118,18 @@ def generate_reply_with_langchain(
     elif context and context.strip() and "No specific context" not in context and not is_general_question:
         prompt = f"{conversation_context}\n\nDatabase context:\n{context}\n\nUser: {user_msg_for_prompt}\n\nGenerate a helpful response. Format opportunities/challenges nicely. Maintain conversation context."
     elif is_general_question:
-        prompt = f"{conversation_context}\n\nUser: {user_msg_for_prompt}\n\nThis is a general knowledge question. Answer it helpfully, then gently redirect to Alabama tech community topics if appropriate."
+        # Out-of-scope: explicitly instruct the model NOT to answer the content,
+        # only to explain the scope of Chip.
+        prompt = (
+            f"{conversation_context}\n\n"
+            f"User: {user_msg_for_prompt}\n\n"
+            "The user's question is OUTSIDE the scope of Chip (not about Alabama tech community "
+            "opportunities, internships, challenges, events, or tech careers).\n\n"
+            "Politely decline to answer the specific question and instead explain that you are focused on "
+            "helping with Alabama tech community opportunities, internships, challenges, events, and related "
+            "career support. Invite them to ask about those topics instead. Do NOT provide an actual answer "
+            "to the out-of-scope content."
+        )
     else:
         prompt = f"{conversation_context}\n\nUser: {user_msg_for_prompt}\n\nGenerate a helpful response about the Alabama tech community. Maintain conversation context."
     
