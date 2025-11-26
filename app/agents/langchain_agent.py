@@ -142,19 +142,52 @@ def generate_reply_with_langchain(
     # Generate response
     try:
         reply = llm.invoke(messages).content.strip()
-        if not reply or len(reply) < 10:
-            reply = "I'm here to help! What would you like to know about the Alabama tech community?"
-        # Remove the generic fallback if it appears in the middle of conversation
+
+        # If the model gives an extremely short or empty answer, use a scoped fallback
+        if not reply or len(reply) < 5:
+            if is_general_question:
+                reply = (
+                    "I'm mainly here to help with Alabama tech community opportunities, internships, "
+                    "challenges, and events, so I can't answer that in detail."
+                )
+            else:
+                reply = (
+                    "I'm having trouble answering that right now, but I can help you find Alabama tech "
+                    "opportunities, internships, challenges, and events if you tell me what you're looking for."
+                )
+
+        # If the model somehow produced the old generic message in the middle of a conversation,
+        # try to regenerate something more contextual instead of repeating it.
         if conversation_history and "I'm here to help" in reply and "What would you like to know" in reply:
-            # Try to generate a more contextual response
             try:
-                contextual_prompt = f"{conversation_context}\n\nUser: {user_msg_for_prompt}\n\nContinue the conversation naturally based on the context above."
-                reply = llm.invoke([SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=contextual_prompt)]).content.strip()
-            except:
+                contextual_prompt = (
+                    f"{conversation_context}\n\nUser: {user_msg_for_prompt}\n\n"
+                    "Continue the conversation naturally based on the context above. "
+                    "Do NOT reset the conversation; respond based on the user's latest message."
+                )
+                reply = (
+                    llm.invoke(
+                        [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=contextual_prompt)]
+                    )
+                    .content.strip()
+                )
+            except Exception:
+                # If regeneration fails, keep the existing reply
                 pass
     except Exception as e:
+        # If the LLM call itself fails, use a clear, domain‑specific fallback instead of a vague reset.
         print(f"LangChain error: {e}")
-        reply = "I'm here to help! What would you like to know about the Alabama tech community?"
+        if is_general_question:
+            reply = (
+                "I'm focused on helping with Alabama tech community opportunities, internships, challenges, "
+                "and events, so I can't answer that specific question."
+            )
+        else:
+            reply = (
+                "Something went wrong while trying to answer that. "
+                "I can still help you explore Alabama tech opportunities, internships, challenges, and events "
+                "if you tell me what you're interested in."
+            )
     
     # Use original message for submission detection to preserve user intent
     return reply, _detect_submission(user_message, context, user_id)
