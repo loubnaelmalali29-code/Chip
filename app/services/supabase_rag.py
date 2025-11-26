@@ -90,8 +90,11 @@ class SupabaseRAGService:
         Returns:
             List of opportunities
         """
+        # In production we never want to surface fake data.
+        # If Supabase is unavailable, return an empty list and let the agent
+        # explain that data is temporarily unavailable.
         if not self.is_available():
-            return self._get_mock_opportunities(limit)
+            return []
         
         try:
             response = self.client.table("opportunities").select("*").limit(limit).execute()
@@ -123,8 +126,11 @@ class SupabaseRAGService:
         Returns:
             List of challenges
         """
+        # In production we never want to surface fake data.
+        # If Supabase is unavailable, return an empty list and let the agent
+        # explain that data is temporarily unavailable.
         if not self.is_available():
-            return self._get_mock_challenges(limit)
+            return []
         
         try:
             response = self.client.table("challenges").select("*").limit(limit).execute()
