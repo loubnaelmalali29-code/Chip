@@ -3,29 +3,51 @@
 import os
 import re
 from typing import Optional, Dict, Any
+
 from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
+
+# Groq is optional. If the package isn't installed, we simply won't use it.
 try:
-    from langchain_groq import ChatGroq
-except ImportError:
-    from langchain_community.chat_models import ChatGroq
+    from langchain_groq import ChatGroq  # type: ignore[import]
+except ImportError:  # pragma: no cover - optional dependency
+    ChatGroq = None  # type: ignore[assignment]
+
 try:
     from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-except ImportError:
-    from langchain.schema import HumanMessage, SystemMessage
-    AIMessage = None  # Fallback if not available
+except ImportError:  # pragma: no cover - older langchain versions
+    from langchain.schema import HumanMessage, SystemMessage  # type: ignore[no-redef]
+    AIMessage = None  # type: ignore[assignment]
 from app.services.supabase_rag import get_rag_service
 from app.utils.spelling import correct_spelling, extract_clean_message
 
 
 def _get_llm():
-    """Get LLM - tries Gemini, Groq, then OpenAI."""
-    if key := os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"):
-        return ChatGoogleGenerativeAI(model=os.getenv("GEMINI_MODEL", "gemini-1.5-flash"), google_api_key=key, temperature=0.7)
-    if key := os.getenv("GROQ_API_KEY"):
-        return ChatGroq(model=os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile"), groq_api_key=key, temperature=0.7)
+    """Get LLM - tries Gemini, Groq (if available), then OpenAI."""
+    # 1) Gemini / Google
+    if key := (os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")):
+        return ChatGoogleGenerativeAI(
+            model=os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
+            google_api_key=key,
+            temperature=0.7,
+        )
+
+    # 2) Groq (optional - only if package and key are available)
+    groq_key = os.getenv("GROQ_API_KEY")
+    if ChatGroq is not None and groq_key:
+        return ChatGroq(
+            model=os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile"),
+            groq_api_key=groq_key,
+            temperature=0.7,
+        )
+
+    # 3) OpenAI
     if key := os.getenv("OPENAI_API_KEY"):
-        return ChatOpenAI(model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"), openai_api_key=key, temperature=0.7)
+        return ChatOpenAI(
+            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            openai_api_key=key,
+            temperature=0.7,
+        )
     raise RuntimeError("No LLM API key found. Set GOOGLE_API_KEY, GROQ_API_KEY, or OPENAI_API_KEY")
 
 
