@@ -76,131 +76,70 @@ def generate_reply_with_langchain(
     recipient: Optional[str] = None,
     conversation_history: Optional[list] = None,
 ) -> tuple[str, Optional[Dict[str, Any]]]:
-    """Generate reply using LangChain with Supabase RAG.
-    
-    Handles misspellings, maintains conversation context, and normalizes user input.
+    """Generate a reply for Chip without calling an external LLM.
+
+    We keep the same function signature, but implement the behaviour
+    deterministically using the Supabase RAG service and simple rules.
     """
-    llm = _get_llm()
-    
-    # Clean and correct spelling in user message
+
+    # Normalise and lightly correct the user's message
     cleaned_message = extract_clean_message(user_message)
-    corrected_message = correct_spelling(cleaned_message, aggressive=True)  # Use aggressive for better correction
-    
-    # Detect if this is a general knowledge question (not about database)
-    is_general_question = _is_general_knowledge_question(corrected_message)
-    
-    # Only get database context if it's relevant (not a general knowledge question)
-    search_query = corrected_message if corrected_message != cleaned_message else cleaned_message
-    
-    # Get context if not provided and it's not a general question
-    if not context and not is_general_question:
-        context = get_rag_service().get_context_for_query(search_query)
-    elif is_general_question:
-        context = ""  # Don't use database context for general questions
-    
-    # Build conversation context
-    conversation_context = ""
-    if conversation_history:
-        conversation_context = "\n\nPrevious conversation:\n"
-        for msg in conversation_history[-3:]:  # Last 3 messages
-            role = "User" if msg.get("role") == "user" else "You"
-            conversation_context += f"{role}: {msg.get('content', '')}\n"
-    
-    # Build prompt
-    user_msg_for_prompt = corrected_message if corrected_message else cleaned_message
-    
-    # Detect if user is selecting an option
-    is_option_selection = _is_selecting_option(user_msg_for_prompt)
-    
-    if is_option_selection and conversation_history:
-        # User is selecting from previous list - emphasize context
-        prompt = f"{conversation_context}\n\nUser is selecting an option from your previous message. Understand which item they're referring to and provide details about that specific item.\n\nUser: {user_msg_for_prompt}\n\nProvide detailed information about the selected item."
-    elif context and context.strip() and "No specific context" not in context and not is_general_question:
-        prompt = f"{conversation_context}\n\nDatabase context:\n{context}\n\nUser: {user_msg_for_prompt}\n\nGenerate a helpful response. Format opportunities/challenges nicely. Maintain conversation context."
-    elif is_general_question:
-        # Out-of-scope: explicitly instruct the model NOT to answer the content,
-        # only to explain the scope of Chip.
-        prompt = (
-            f"{conversation_context}\n\n"
-            f"User: {user_msg_for_prompt}\n\n"
-            "The user's question is OUTSIDE the scope of Chip (not about Alabama tech community "
-            "opportunities, internships, challenges, events, or tech careers).\n\n"
-            "Politely decline to answer the specific question and instead explain that you are focused on "
-            "helping with Alabama tech community opportunities, internships, challenges, events, and related "
-            "career support. Invite them to ask about those topics instead. Do NOT provide an actual answer "
-            "to the out-of-scope content."
+    corrected_message = correct_spelling(cleaned_message, aggressive=True)
+    query = corrected_message or cleaned_message
+
+    # Detect if this is a general (out-of-scope) question
+    if _is_general_knowledge_question(query):
+        reply = (
+            "I'm here to help with Alabama tech community opportunities, internships, "
+            "challenges, and events. I can't really answer that question, but if you tell me "
+            "what kind of opportunity or challenge you're interested in, I can share options "
+            "or next steps."
         )
+        return reply, _detect_submission(user_message, context, user_id)
+
+    # Ask the RAG service for relevant opportunities/challenges
+    rag = get_rag_service()
+    context = rag.get_context_for_query(query)
+
+    # If we didn't get any meaningful context back, tell the user
+    if not context or not context.strip() or "No specific context" in context:
+        reply = (
+            "I wasn't able to find any specific opportunities or challenges that match your request. "
+            "You can try asking about \"internships\", \"jobs\", or \"challenges\" in the Alabama tech "
+            "community, or reach out to the Innovation Portal team for more details."
+        )
+        return reply, _detect_submission(user_message, context, user_id)
+
+    # If the user seems to be selecting an option from a previous list
+    if _is_selecting_option(query):
+        reply = (
+            "Got it — it sounds like you're interested in one of the options I shared. "
+            "Please reply with the title or a short description of the opportunity or challenge "
+            "you're choosing, and I'll help you with the next steps."
+        )
+        return reply, _detect_submission(user_message, context, user_id)
+
+    # Otherwise, format the context into a friendly list
+    lines: list[str] = []
+    lowered = query.lower()
+    if any(word in lowered for word in ["job", "jobs", "intern", "internship", "opportunit"]):
+        lines.append("Here are some Alabama tech opportunities and internships I found:")
+    elif "challenge" in lowered:
+        lines.append("Here are some Alabama tech challenges that might interest you:")
     else:
-        prompt = f"{conversation_context}\n\nUser: {user_msg_for_prompt}\n\nGenerate a helpful response about the Alabama tech community. Maintain conversation context."
-    
-    # Build messages with history
-    messages = [SystemMessage(content=SYSTEM_PROMPT)]
-    
-    # Add conversation history
-    if conversation_history:
-        for msg in conversation_history[-3:]:  # Last 3 messages for context
-            if msg.get("role") == "user":
-                messages.append(HumanMessage(content=msg.get("content", "")))
-            elif msg.get("role") == "assistant" and AIMessage:
-                try:
-                    messages.append(AIMessage(content=msg.get("content", "")))
-                except:
-                    pass  # Fallback if AIMessage not available
-    
-    # Add current user message
-    messages.append(HumanMessage(content=prompt))
-    
-    # Generate response
-    try:
-        reply = llm.invoke(messages).content.strip()
+        lines.append(
+            "Here are some opportunities and challenges from the Alabama tech community that may be relevant:"
+        )
 
-        # If the model gives an extremely short or empty answer, use a scoped fallback
-        if not reply or len(reply) < 5:
-            if is_general_question:
-                reply = (
-                    "I'm mainly here to help with Alabama tech community opportunities, internships, "
-                    "challenges, and events, so I can't answer that in detail."
-                )
-            else:
-                reply = (
-                    "I'm having trouble answering that right now, but I can help you find Alabama tech "
-                    "opportunities, internships, challenges, and events if you tell me what you're looking for."
-                )
+    lines.append("")
+    lines.append(context)
+    lines.append("")
+    lines.append(
+        "If you're interested in one of these, you can reply with something like "
+        "\"I'm interested in option 1\" or mention the title of the opportunity or challenge."
+    )
 
-        # If the model somehow produced the old generic message in the middle of a conversation,
-        # try to regenerate something more contextual instead of repeating it.
-        if conversation_history and "I'm here to help" in reply and "What would you like to know" in reply:
-            try:
-                contextual_prompt = (
-                    f"{conversation_context}\n\nUser: {user_msg_for_prompt}\n\n"
-                    "Continue the conversation naturally based on the context above. "
-                    "Do NOT reset the conversation; respond based on the user's latest message."
-                )
-                reply = (
-                    llm.invoke(
-                        [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=contextual_prompt)]
-                    )
-                    .content.strip()
-                )
-            except Exception:
-                # If regeneration fails, keep the existing reply
-                pass
-    except Exception as e:
-        # If the LLM call itself fails, use a clear, domain‑specific fallback instead of a vague reset.
-        print(f"LangChain error: {e}")
-        if is_general_question:
-            reply = (
-                "I'm focused on helping with Alabama tech community opportunities, internships, challenges, "
-                "and events, so I can't answer that specific question."
-            )
-        else:
-            reply = (
-                "Something went wrong while trying to answer that. "
-                "I can still help you explore Alabama tech opportunities, internships, challenges, and events "
-                "if you tell me what you're interested in."
-            )
-    
-    # Use original message for submission detection to preserve user intent
+    reply = "\n".join(lines)
     return reply, _detect_submission(user_message, context, user_id)
 
 
